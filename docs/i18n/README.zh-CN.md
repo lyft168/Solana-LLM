@@ -9,7 +9,7 @@ EHBP(HPKE 密封)请求、TEE 证明绑定、流式输出、工具调用,可直�
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-14F195.svg)](../../LICENSE)
-[![Tests](https://img.shields.io/badge/tests-20%20通过-14F195.svg)](../../tests/)
+[![Tests](https://img.shields.io/badge/tests-30%20通过-14F195.svg)](../../tests/)
 [![Crypto](https://img.shields.io/badge/crypto-HPKE%20%C2%B7%20X25519%20%C2%B7%20AES--256--GCM-9945FF.svg)](../protocol-ehbp.md)
 [![OpenAI](https://img.shields.io/badge/API-兼容%20OpenAI-10A37F.svg)](../9router.md)
 [![Telegram](https://img.shields.io/badge/社区-Telegram-26A5E4?logo=telegram&logoColor=white)](https://t.me/inspectoraiofc)
