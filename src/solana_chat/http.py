@@ -18,6 +18,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+from .errors import TransportError
+
 DEFAULT_BASE_URL = "https://solana.ai"
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -159,11 +161,16 @@ class Transport:
                 resp = conn.getresponse()
                 payload = resp.read()
                 break
-            except _STALE_ERRORS:
+            except _STALE_ERRORS as exc:
                 # idle keep-alive connection was closed by the peer; retry once
                 self._drop(scheme, host, port)
                 if attempt:
-                    raise
+                    raise TransportError(
+                        f"cannot reach {req.full_url}: {exc}"
+                    ) from exc
+            except (http.client.HTTPException, TimeoutError, OSError) as exc:
+                self._drop(scheme, host, port)
+                raise TransportError(f"cannot reach {req.full_url}: {exc}") from exc
             except BaseException:
                 self._drop(scheme, host, port)
                 raise
@@ -192,6 +199,9 @@ class Transport:
                 headers={k.lower(): v for k, v in (exc.headers or {}).items()},
                 body=payload,
             )
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            raise TransportError(f"cannot reach {req.full_url}: {reason}") from exc
 
     def post_json(
         self, path: str, obj, *, headers: dict[str, str] | None = None

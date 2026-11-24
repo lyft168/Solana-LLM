@@ -245,7 +245,12 @@ def parse_attestation_bundle(bundle: dict[str, Any]) -> Attestation:
     if len(hpke_key) != 32:
         raise AttestationError("hpke public key is not 32 bytes")
     domain = bundle["domain"]
-    if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)*\.tinfoil\.sh", domain):
+    # Strict hostname labels only. '#' (or '/', '?', '@', ':') would start a
+    # URL fragment/path/userinfo, so "x#a.tinfoil.sh" actually targets host
+    # "x" and would bypass this allow-list. Never widen this character set.
+    if not isinstance(domain, str) or not re.fullmatch(
+        r"[a-z0-9-]+(\.[a-z0-9-]+)*\.tinfoil\.sh", domain
+    ):
         raise AttestationError(f"untrusted enclave host {domain!r}")
     return Attestation(
         hpke_public_key=hpke_key,

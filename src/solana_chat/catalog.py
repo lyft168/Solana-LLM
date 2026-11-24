@@ -87,7 +87,11 @@ def resolve_model(name: str | None) -> Model:
         if target in {_normalise(a) for a in model.aliases}:
             return model
     known = sorted({a for m in MODELS for a in m.aliases if a == a.lower()})
-    raise KeyError(f"unknown model {name!r}; available: {', '.join(known)}")
+    from .errors import UnknownModelError
+
+    raise UnknownModelError(
+        f"unknown model {name!r}; available: {', '.join(known)}"
+    )
 
 
 def iter_models() -> Iterable[Model]:
