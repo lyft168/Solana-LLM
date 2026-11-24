@@ -15,6 +15,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
+from .errors import TransportError
+
 DEFAULT_BASE_URL = "https://solana.ai"
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -104,6 +106,9 @@ class Transport:
                 headers={k.lower(): v for k, v in (exc.headers or {}).items()},
                 body=payload,
             )
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            raise TransportError(f"cannot reach {url}: {reason}") from exc
 
     def post_json(
         self, path: str, obj, *, headers: dict[str, str] | None = None

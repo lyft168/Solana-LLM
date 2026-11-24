@@ -26,3 +26,7 @@ class RelayError(SolanaChatError):
 
 class UpstreamError(SolanaChatError):
     """The enclave or relay returned an unexpected payload shape."""
+
+
+class TransportError(SolanaChatError):
+    """Network-level failure reaching the relay (DNS, TCP, TLS, timeout)."""

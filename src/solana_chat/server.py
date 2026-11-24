@@ -21,7 +21,6 @@ working function-calling surface on top of a plain chat model.
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,8 +38,6 @@ TOOL_INSTRUCTION = (
     "normally in plain text."
 )
 
-_JSON_CALL = re.compile(r"\{[\s\S]*\"tool_calls\"[\s\S]*\}", re.MULTILINE)
-
 
 def _flatten_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Collapse OpenAI message shapes into the plain user/assistant pairs
@@ -56,6 +53,10 @@ def _flatten_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
                 part.get("text", "") for part in content if isinstance(part, dict)
             )
         content = content or ""
+        if role == "assistant" and message.get("tool_calls"):
+            # the relay requires non-empty content on every message; the
+            # tool call itself carries the payload, so seed a placeholder
+            content = content or "[tool call]"
         if role == "system":
             pending_system.append(content)
             continue
@@ -102,17 +103,10 @@ def _render_tools(tools: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _parse_tool_calls(text: str) -> tuple[str, list[dict[str, Any]]]:
-    match = _JSON_CALL.search(text)
-    if not match:
-        return text, []
-    try:
-        payload = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return text, []
+def _extract_calls(payload: dict[str, Any]) -> list[dict[str, Any]]:
     calls = payload.get("tool_calls")
     if not isinstance(calls, list):
-        return text, []
+        return []
     result: list[dict[str, Any]] = []
     for idx, call in enumerate(calls):
         if not isinstance(call, dict):
@@ -121,6 +115,12 @@ def _parse_tool_calls(text: str) -> tuple[str, list[dict[str, Any]]]:
         arguments = call.get("arguments", {})
         if not isinstance(name, str):
             continue
+        if isinstance(arguments, str):
+            # some models emit the arguments as a JSON string
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = {}
         result.append(
             {
                 "id": f"call_{int(time.time() * 1000)}_{idx}",
@@ -131,8 +131,31 @@ def _parse_tool_calls(text: str) -> tuple[str, list[dict[str, Any]]]:
                 },
             }
         )
-    remainder = text[: match.start()] + text[match.end() :]
-    return remainder.strip(), result
+    return result
+
+
+def _parse_tool_calls(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """Find a JSON object with a tool_calls key anywhere in the reply.
+
+    Uses raw_decode scanning rather than a greedy regex so prose containing
+    braces before/after the JSON object cannot break parsing.
+    """
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            payload, end = decoder.raw_decode(text[i:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict) or "tool_calls" not in payload:
+            continue
+        calls = _extract_calls(payload)
+        if not calls:
+            return text, []
+        remainder = (text[:i] + text[i + end :]).strip()
+        return remainder, calls
+    return text, []
 
 
 class OpenAICompatServer:
@@ -199,6 +222,16 @@ class OpenAICompatServer:
                     return
                 try:
                     server._handle_chat(self, request)
+                except KeyError as exc:
+                    self._json(
+                        400,
+                        {
+                            "error": {
+                                "message": str(exc),
+                                "type": "invalid_request",
+                            }
+                        },
+                    )
                 except SolanaChatError as exc:
                     self._json(
                         502,
@@ -348,9 +381,8 @@ class OpenAICompatServer:
         handler.send_response(200)
         handler.send_header("Content-Type", "text/event-stream")
         handler.send_header("Cache-Control", "no-cache")
-        handler.send_header("Connection", "keep-alive")
-        # No Content-Length: the connection itself delimits the body, and
-        # keep-alive would make clients wait for more bytes after [DONE].
+        # No Content-Length: the connection itself delimits the body, so we
+        # must close it after [DONE] or keep-alive clients wait for more.
         handler.send_header("Connection", "close")
         handler.close_connection = True
         handler.end_headers()

@@ -51,7 +51,8 @@ class SessionStore:
         if self._cache is None:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
+        # unique tmp name so two processes never clobber each other's write
+        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
         tmp.write_text(
             json.dumps(self._cache, indent=2, sort_keys=True), encoding="utf-8"
         )

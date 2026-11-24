@@ -244,7 +244,9 @@ def parse_attestation_bundle(bundle: dict[str, Any]) -> Attestation:
     if len(hpke_key) != 32:
         raise AttestationError("hpke public key is not 32 bytes")
     domain = bundle["domain"]
-    if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)*\.tinfoil\.sh", domain):
+    # Tinfoil enclave hosts look like "<name>.tinfoil.sh" or use the '#'
+    # subdomain style ("solana#chat.tinfoil.sh"); both must be accepted.
+    if not re.fullmatch(r"[a-z0-9#-]+(\.[a-z0-9-]+)*\.tinfoil\.sh", domain):
         raise AttestationError(f"untrusted enclave host {domain!r}")
     return Attestation(
         hpke_public_key=hpke_key,
