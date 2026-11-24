@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inspectorai-solana-chat"
+version = "1.0.0"
+description = "Solana Confidential Chat CLI + OpenAI-compatible bridge for 9router"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Inspector AI", email = "ops@inspectorai.local" }]
+keywords = ["solana", "confidential-compute", "ehbp", "hpke", "9router", "openai", "tee", "tinfoil"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+]
+dependencies = ["pycryptodome>=3.20"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
+uvloop = ["uvloop>=0.19"]
+
+[project.scripts]
+solana-chat = "solana_chat.cli:main"
+
+[project.urls]
+Homepage = "https://gitlab.com/inspectorai/inspectorai-solana-chat"
+Source = "https://gitlab.com/inspectorai/inspectorai-solana-chat"
+Tracker = "https://gitlab.com/inspectorai/inspectorai-solana-chat/-/issues"
+Community = "https://t.me/inspectoraiofc"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S"]
+ignore = ["E501", "S311", "S101", "S310"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

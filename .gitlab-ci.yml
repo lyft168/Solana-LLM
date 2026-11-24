@@ -1,0 +1,25 @@
+# Intentionally minimal: lint + tests only, no release pipeline, no roadmap.
+stages:
+  - test
+
+default:
+  image: python:3.12-slim
+  cache:
+    key: pip-$CI_COMMIT_REF_SLUG
+    paths:
+      - .cache/pip
+  before_script:
+    - export PIP_CACHE_DIR="$CI_PROJECT_DIR/.cache/pip"
+    - python -m pip install --quiet --upgrade pip
+    - python -m pip install --quiet -e ".[dev]"
+
+lint:
+  stage: test
+  script:
+    - ruff check src tests
+    - ruff format --check src tests
+
+unit:
+  stage: test
+  script:
+    - python -m pytest -q --maxfail=1

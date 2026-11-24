@@ -1,0 +1,26 @@
+[Unit]
+Description=inspectorai-solana-chat OpenAI-compatible bridge
+Documentation=https://gitlab.com/inspectorai/inspectorai-solana-chat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=solanachat
+Group=solanachat
+WorkingDirectory=/opt/solana-chat
+EnvironmentFile=/etc/solana-chat/env
+ExecStart=/opt/solana-chat/.venv/bin/solana-chat serve --host 127.0.0.1 --port 20129
+Restart=always
+RestartSec=3
+# Hardening: the bridge only needs outbound HTTPS + a local bind.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/solana-chat
+StateDirectory=solanachat
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

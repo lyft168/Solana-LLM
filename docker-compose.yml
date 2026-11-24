@@ -1,0 +1,22 @@
+services:
+  solana-chat:
+    build: .
+    image: inspectorai/solana-chat:latest
+    container_name: solana-chat
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:20129:20129"
+    environment:
+      SOLANA_CHAT_API_KEY: "${SOLANA_CHAT_API_KEY:-}"
+      SOLANA_CHAT_PROXY: "${SOLANA_CHAT_PROXY:-}"
+      SOLANA_CHAT_UA: "${SOLANA_CHAT_UA:-}"
+    volumes:
+      - session-state:/home/chat/.local/state
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:20129/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  session-state: {}

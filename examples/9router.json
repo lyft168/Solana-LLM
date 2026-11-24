@@ -1,0 +1,19 @@
+{
+  "provider": "solana-confidential",
+  "type": "openai-compatible",
+  "label": "Solana Confidential Chat (TEE)",
+  "baseUrl": "http://127.0.0.1:20129/v1",
+  "apiKey": "REPLACE_WITH_SOLANA_CHAT_API_KEY",
+  "models": [
+    { "id": "deepseek/deepseek-v4.1-flash:encrypted", "name": "DeepSeek V4.1 Flash" },
+    { "id": "openai/gpt-oss-120b:encrypted", "name": "GPT-OSS 120B" },
+    { "id": "google/gemma-4-31b-it:encrypted", "name": "Gemma 4 31B" },
+    { "id": "z-ai/glm-5.3:encrypted", "name": "GLM 5.3" },
+    { "id": "moonshotai/kimi-k3.1-pro:encrypted", "name": "Kimi K3.1 Pro" }
+  ],
+  "capabilities": {
+    "chat": true,
+    "stream": true,
+    "toolCalls": true
+  }
+}
