@@ -23,6 +23,7 @@ import os
 import re
 import shlex
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -302,6 +303,7 @@ class SolanaChatClient:
         self._store = session_store or SessionStore()
         self._log = logger or (lambda _msg: None)
         self._session_ready = False
+        self._session_lock = threading.Lock()
         # Seed the cookie jar from a persisted session, if any.
         for name, value in self._store.load_cookies().items():
             from http.cookiejar import Cookie
@@ -331,6 +333,13 @@ class SolanaChatClient:
     def ensure_session(self, force: bool = False) -> None:
         if self._session_ready and not force:
             return
+        with self._session_lock:
+            # another thread may have finished the handshake while we waited
+            if self._session_ready and not force:
+                return
+            self._open_session()
+
+    def _open_session(self) -> None:
         challenge = None
         if self._challenge_provider:
             challenge = self._challenge_provider("/api/chat/session", "POST")
@@ -400,7 +409,7 @@ class SolanaChatClient:
             raise UpstreamError(f"conversation malformed: {problem}")
         started = time.monotonic()
         nonce = hpke.generate_nonce(32)
-        attestation = self.attest(catalog, nonce)
+        attestation = self._cached_attestation(catalog, nonce)
         request_json = json.dumps(
             {
                 "max_completion_tokens": max_completion_tokens,
@@ -429,6 +438,8 @@ class SolanaChatClient:
             headers=headers,
         )
         if not resp.ok:
+            # key may have rotated; force a fresh attest next time
+            self._store.forget_attestation(catalog.key)
             code = self._relay_code(resp)
             raise RelayError(
                 code or f"http_{resp.status}",
@@ -445,6 +456,36 @@ class SolanaChatClient:
         return self._parse_completion(payload, catalog, started)
 
     # -- helpers ---------------------------------------------------------
+    ATTESTATION_TTL = float(os.environ.get("SOLANA_CHAT_ATTEST_TTL", "900"))
+
+    def _cached_attestation(self, catalog: Model, nonce: str) -> Attestation:
+        record = self._store.read_attestation(catalog.key, ttl=self.ATTESTATION_TTL)
+        if record:
+            try:
+                return Attestation(
+                    hpke_public_key=bytes.fromhex(record["hpke_public_key"]),
+                    enclave_origin=record["enclave_origin"],
+                    digest=record["digest"],
+                    release_tag=record.get("release_tag"),
+                    domain=record["domain"],
+                    protocol=record.get("protocol", "ehbp-v1"),
+                )
+            except (KeyError, ValueError, TypeError):
+                self._store.forget_attestation(catalog.key)
+        att = self.attest(catalog, nonce)
+        self._store.memo_attestation(
+            catalog.key,
+            {
+                "hpke_public_key": att.hpke_public_key.hex(),
+                "enclave_origin": att.enclave_origin,
+                "digest": att.digest,
+                "release_tag": att.release_tag,
+                "domain": att.domain,
+                "protocol": att.protocol,
+            },
+        )
+        return att
+
     def _parse_completion(
         self, payload: dict[str, Any], catalog: Model, started: float
     ) -> ChatResult:

@@ -20,8 +20,9 @@ working function-calling surface on top of a plain chat model.
 
 from __future__ import annotations
 
+import hmac
 import json
-import re
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,7 +40,23 @@ TOOL_INSTRUCTION = (
     "normally in plain text."
 )
 
-_JSON_CALL = re.compile(r"\{[\s\S]*\"tool_calls\"[\s\S]*\}", re.MULTILINE)
+MAX_BODY_BYTES = int(os.environ.get("SOLANA_CHAT_MAX_BODY", str(1 << 20)))
+_DECODER = json.JSONDecoder()
+
+
+def _find_tool_json(text: str) -> tuple[dict, int, int] | None:
+    """Return the first balanced JSON object containing a tool_calls list."""
+    pos = text.find("{")
+    while pos != -1:
+        try:
+            obj, end = _DECODER.raw_decode(text, pos)
+        except json.JSONDecodeError:
+            pos = text.find("{", pos + 1)
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("tool_calls"), list):
+            return obj, pos, end
+        pos = text.find("{", pos + 1)
+    return None
 
 
 def _flatten_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -103,16 +120,13 @@ def _render_tools(tools: list[dict[str, Any]]) -> str:
 
 
 def _parse_tool_calls(text: str) -> tuple[str, list[dict[str, Any]]]:
-    match = _JSON_CALL.search(text)
-    if not match:
+    if '"tool_calls"' not in text:
         return text, []
-    try:
-        payload = json.loads(match.group(0))
-    except json.JSONDecodeError:
+    found = _find_tool_json(text)
+    if not found:
         return text, []
-    calls = payload.get("tool_calls")
-    if not isinstance(calls, list):
-        return text, []
+    payload, start, end = found
+    calls = payload["tool_calls"]
     result: list[dict[str, Any]] = []
     for idx, call in enumerate(calls):
         if not isinstance(call, dict):
@@ -131,7 +145,7 @@ def _parse_tool_calls(text: str) -> tuple[str, list[dict[str, Any]]]:
                 },
             }
         )
-    remainder = text[: match.start()] + text[match.end() :]
+    remainder = text[:start] + text[end:]
     return remainder.strip(), result
 
 
@@ -190,7 +204,14 @@ class OpenAICompatServer:
                         {"error": {"message": "invalid api key", "code": 401}},
                     )
                     return
-                length = int(self.headers.get("Content-Length", "0"))
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    length = -1
+                if length < 0 or length > MAX_BODY_BYTES:
+                    self.close_connection = True
+                    self._json(413, {"error": {"message": "request body too large"}})
+                    return
                 raw = self.rfile.read(length) if length else b"{}"
                 try:
                     request = json.loads(raw)
@@ -217,7 +238,9 @@ class OpenAICompatServer:
                 if not server.api_key:
                     return True
                 header = self.headers.get("Authorization", "")
-                return header == f"Bearer {server.api_key}"
+                return hmac.compare_digest(
+                    header.encode("utf-8"), f"Bearer {server.api_key}".encode("utf-8")
+                )
 
             def _json(self, status: int, payload: dict) -> None:
                 body = json.dumps(payload).encode("utf-8")
@@ -348,7 +371,6 @@ class OpenAICompatServer:
         handler.send_response(200)
         handler.send_header("Content-Type", "text/event-stream")
         handler.send_header("Cache-Control", "no-cache")
-        handler.send_header("Connection", "keep-alive")
         # No Content-Length: the connection itself delimits the body, and
         # keep-alive would make clients wait for more bytes after [DONE].
         handler.send_header("Connection", "close")
