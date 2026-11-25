@@ -389,9 +389,24 @@ class OpenAICompatServer:
         result: ChatResult,
     ) -> dict:
         message: dict[str, Any] = {"role": "assistant", "content": content}
+        if result.reasoning:
+            # OpenAI-compatible clients (9router, Cline, ...) read thinking
+            # text from reasoning_content; only sent when the model produced it
+            message["reasoning_content"] = result.reasoning
         if tool_calls:
             message["tool_calls"] = tool_calls
             message["content"] = content or None
+        usage: dict[str, Any] = {
+            "prompt_tokens": result.usage["prompt_tokens"],
+            "completion_tokens": result.usage["completion_tokens"],
+            "total_tokens": result.usage["prompt_tokens"]
+            + result.usage["completion_tokens"],
+        }
+        reasoning_tokens = int(result.usage.get("reasoning_tokens", 0) or 0)
+        if reasoning_tokens:
+            usage["completion_tokens_details"] = {
+                "reasoning_tokens": reasoning_tokens
+            }
         return {
             "id": f"chatcmpl-{int(time.time() * 1000)}",
             "object": "chat.completion",
@@ -404,12 +419,7 @@ class OpenAICompatServer:
                     "finish_reason": finish_reason,
                 }
             ],
-            "usage": {
-                "prompt_tokens": result.usage["prompt_tokens"],
-                "completion_tokens": result.usage["completion_tokens"],
-                "total_tokens": result.usage["prompt_tokens"]
-                + result.usage["completion_tokens"],
-            },
+            "usage": usage,
         }
 
     def _stream(self, handler, payload: dict, model_id: str) -> None:
@@ -435,6 +445,22 @@ class OpenAICompatServer:
         }
         handler._sse(chunk0)
         message = payload["choices"][0]["message"]
+        reasoning = message.get("reasoning_content") or ""
+        for start in range(0, len(reasoning), 48):
+            handler._sse(
+                {
+                    **base,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "reasoning_content": reasoning[start : start + 48]
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
         if message.get("tool_calls"):
             for idx, call in enumerate(message["tool_calls"]):
                 handler._sse(
