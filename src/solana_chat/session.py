@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -32,31 +34,44 @@ class SessionStore:
     def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
         self.path = Path(path) if path else _default_path()
         self._cache: dict[str, Any] | None = None
+        self._lock = threading.RLock()
 
     # -- raw io ----------------------------------------------------------
     def load(self) -> dict[str, Any]:
-        if self._cache is not None:
-            return self._cache
-        try:
-            raw = self.path.read_text(encoding="utf-8")
-            data = json.loads(raw)
-            if not isinstance(data, dict):
-                raise ValueError("session file is not an object")
-        except (FileNotFoundError, ValueError, OSError):
-            data = {}
-        self._cache = data
-        return data
+        with self._lock:
+            if self._cache is not None:
+                return self._cache
+            try:
+                raw = self.path.read_text(encoding="utf-8")
+                data = json.loads(raw)
+                if not isinstance(data, dict):
+                    raise ValueError("session file is not an object")
+            except (FileNotFoundError, ValueError, OSError):
+                data = {}
+            self._cache = data
+            return data
 
     def save(self) -> None:
-        if self._cache is None:
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps(self._cache, indent=2, sort_keys=True), encoding="utf-8"
-        )
-        os.chmod(tmp, 0o600)
-        tmp.replace(self.path)
+        with self._lock:
+            if self._cache is None:
+                return
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(self._cache, indent=2, sort_keys=True)
+            # unique temp file per write: safe across threads and processes
+            fd, tmp = tempfile.mkstemp(
+                prefix=self.path.name + ".", suffix=".tmp", dir=self.path.parent
+            )
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(payload)
+                os.replace(tmp, self.path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
 
     # -- cookies ---------------------------------------------------------
     def load_cookies(self) -> dict[str, str]:
@@ -71,27 +86,37 @@ class SessionStore:
         return {str(k): str(v) for k, v in cookies.items()}
 
     def save_cookies(self, cookies: dict[str, str]) -> None:
-        data = self.load()
-        data["cookies"] = cookies
-        data["issued_at"] = time.time()
-        self.save()
+        with self._lock:
+            data = self.load()
+            data["cookies"] = cookies
+            data["issued_at"] = time.time()
+            self.save()
 
     def clear(self) -> None:
-        self._cache = {}
-        self.save()
+        with self._lock:
+            self._cache = {}
+            self.save()
 
     # -- attestation memo ------------------------------------------------
     def memo_attestation(self, model: str, record: dict[str, Any]) -> None:
-        data = self.load()
-        memos = data.setdefault("attestations", {})
-        memos[model] = {**record, "stored_at": time.time()}
-        self.save()
+        with self._lock:
+            data = self.load()
+            memos = data.setdefault("attestations", {})
+            memos[model] = {**record, "stored_at": time.time()}
+            self.save()
 
     def read_attestation(self, model: str, ttl: float = 900.0) -> dict | None:
-        memos = self.load().get("attestations") or {}
-        record = memos.get(model)
+        with self._lock:
+            memos = self.load().get("attestations") or {}
+            record = memos.get(model)
         if not record:
             return None
         if time.time() - float(record.get("stored_at", 0)) > ttl:
             return None
         return record
+
+    def forget_attestation(self, model: str) -> None:
+        with self._lock:
+            memos = self.load().get("attestations") or {}
+            if memos.pop(model, None) is not None:
+                self.save()

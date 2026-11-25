@@ -20,8 +20,9 @@ working function-calling surface on top of a plain chat model.
 
 from __future__ import annotations
 
+import hmac
 import json
-import re
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,7 +30,7 @@ from typing import Any
 
 from .catalog import MODELS, resolve_model
 from .client import ChatResult, SolanaChatClient
-from .errors import SolanaChatError
+from .errors import SolanaChatError, UnknownModelError
 
 TOOL_INSTRUCTION = (
     "You can call tools. When a tool is required, respond with ONLY a "
@@ -39,7 +40,23 @@ TOOL_INSTRUCTION = (
     "normally in plain text."
 )
 
-_JSON_CALL = re.compile(r"\{[\s\S]*\"tool_calls\"[\s\S]*\}", re.MULTILINE)
+MAX_BODY_BYTES = int(os.environ.get("SOLANA_CHAT_MAX_BODY", str(1 << 20)))
+_DECODER = json.JSONDecoder()
+
+
+def _find_tool_json(text: str) -> tuple[dict, int, int] | None:
+    """Return the first balanced JSON object containing a tool_calls list."""
+    pos = text.find("{")
+    while pos != -1:
+        try:
+            obj, end = _DECODER.raw_decode(text, pos)
+        except json.JSONDecodeError:
+            pos = text.find("{", pos + 1)
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("tool_calls"), list):
+            return obj, pos, end
+        pos = text.find("{", pos + 1)
+    return None
 
 
 def _flatten_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -56,6 +73,22 @@ def _flatten_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
                 part.get("text", "") for part in content if isinstance(part, dict)
             )
         content = content or ""
+        if role == "assistant" and message.get("tool_calls"):
+            # the relay only sees text, so replay the call in the same JSON
+            # protocol the model was told to emit: it keeps the tool name and
+            # arguments in context instead of an opaque placeholder
+            calls = []
+            for call in message.get("tool_calls") or []:
+                fn = (call or {}).get("function") or {}
+                args = fn.get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        pass
+                calls.append({"name": fn.get("name", "unknown"), "arguments": args})
+            replay = json.dumps({"tool_calls": calls}, separators=(",", ":"))
+            content = f"{content}\n\n{replay}" if content else replay
         if role == "system":
             pending_system.append(content)
             continue
@@ -102,17 +135,10 @@ def _render_tools(tools: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _parse_tool_calls(text: str) -> tuple[str, list[dict[str, Any]]]:
-    match = _JSON_CALL.search(text)
-    if not match:
-        return text, []
-    try:
-        payload = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return text, []
+def _extract_calls(payload: dict[str, Any]) -> list[dict[str, Any]]:
     calls = payload.get("tool_calls")
     if not isinstance(calls, list):
-        return text, []
+        return []
     result: list[dict[str, Any]] = []
     for idx, call in enumerate(calls):
         if not isinstance(call, dict):
@@ -121,18 +147,39 @@ def _parse_tool_calls(text: str) -> tuple[str, list[dict[str, Any]]]:
         arguments = call.get("arguments", {})
         if not isinstance(name, str):
             continue
+        if isinstance(arguments, str):
+            # some models emit the arguments as a JSON string; if it is not
+            # valid JSON, pass it through verbatim so the client sees the
+            # error instead of the tool silently running with {}
+            try:
+                json.loads(arguments)
+                encoded = arguments
+            except json.JSONDecodeError:
+                encoded = arguments
+        else:
+            encoded = json.dumps(arguments, separators=(",", ":"))
         result.append(
             {
                 "id": f"call_{int(time.time() * 1000)}_{idx}",
                 "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": json.dumps(arguments, separators=(",", ":")),
-                },
+                "function": {"name": name, "arguments": encoded},
             }
         )
-    remainder = text[: match.start()] + text[match.end() :]
-    return remainder.strip(), result
+    return result
+
+
+def _parse_tool_calls(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """Find the first balanced JSON object with a tool_calls list."""
+    if '"tool_calls"' not in text:
+        return text, []
+    found = _find_tool_json(text)
+    if not found:
+        return text, []
+    payload, start, end = found
+    calls = _extract_calls(payload)
+    if not calls:
+        return text, []
+    return (text[:start] + text[end:]).strip(), calls
 
 
 class OpenAICompatServer:
@@ -190,7 +237,14 @@ class OpenAICompatServer:
                         {"error": {"message": "invalid api key", "code": 401}},
                     )
                     return
-                length = int(self.headers.get("Content-Length", "0"))
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    length = -1
+                if length < 0 or length > MAX_BODY_BYTES:
+                    self.close_connection = True
+                    self._json(413, {"error": {"message": "request body too large"}})
+                    return
                 raw = self.rfile.read(length) if length else b"{}"
                 try:
                     request = json.loads(raw)
@@ -199,6 +253,18 @@ class OpenAICompatServer:
                     return
                 try:
                     server._handle_chat(self, request)
+                except UnknownModelError as exc:
+                    # only a bad model name is a client error; any other
+                    # KeyError is a real bug and must surface as a 500
+                    self._json(
+                        400,
+                        {
+                            "error": {
+                                "message": str(exc),
+                                "type": "invalid_request",
+                            }
+                        },
+                    )
                 except SolanaChatError as exc:
                     self._json(
                         502,
@@ -217,7 +283,9 @@ class OpenAICompatServer:
                 if not server.api_key:
                     return True
                 header = self.headers.get("Authorization", "")
-                return header == f"Bearer {server.api_key}"
+                return hmac.compare_digest(
+                    header.encode("utf-8"), f"Bearer {server.api_key}".encode("utf-8")
+                )
 
             def _json(self, status: int, payload: dict) -> None:
                 body = json.dumps(payload).encode("utf-8")
@@ -348,9 +416,8 @@ class OpenAICompatServer:
         handler.send_response(200)
         handler.send_header("Content-Type", "text/event-stream")
         handler.send_header("Cache-Control", "no-cache")
-        handler.send_header("Connection", "keep-alive")
-        # No Content-Length: the connection itself delimits the body, and
-        # keep-alive would make clients wait for more bytes after [DONE].
+        # No Content-Length: the connection itself delimits the body, so we
+        # must close it after [DONE] or keep-alive clients wait for more.
         handler.send_header("Connection", "close")
         handler.close_connection = True
         handler.end_headers()

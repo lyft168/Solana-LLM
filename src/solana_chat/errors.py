@@ -26,3 +26,18 @@ class RelayError(SolanaChatError):
 
 class UpstreamError(SolanaChatError):
     """The enclave or relay returned an unexpected payload shape."""
+
+
+class TransportError(SolanaChatError):
+    """Network-level failure reaching the relay (DNS, TCP, TLS, timeout)."""
+
+
+class UnknownModelError(SolanaChatError, KeyError):
+    """The requested model alias is not in the catalog (client error, 400).
+
+    Subclasses KeyError for backward compatibility with callers that
+    caught KeyError from resolve_model().
+    """
+
+    def __str__(self) -> str:  # KeyError.__str__ would repr() the message
+        return str(self.args[0]) if self.args else "unknown model"

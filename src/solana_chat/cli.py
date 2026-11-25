@@ -141,10 +141,12 @@ def cmd_serve(args) -> int:
         default_model=args.default_model,
     )
     api_key = args.api_key or os.environ.get("SOLANA_CHAT_API_KEY")
-    print(f"solana-chat bridge listening on http://{args.host}:{args.port}/v1")
-    print("  models : GET  /v1/models")
-    print("  chat   : POST /v1/chat/completions")
-    print(f"  key    : {'set' if api_key else 'none (loopback only)'}")
+    print(
+        f"solana-chat bridge listening on http://{args.host}:{args.port}/v1", flush=True
+    )
+    print("  models : GET  /v1/models", flush=True)
+    print("  chat   : POST /v1/chat/completions", flush=True)
+    print(f"  key    : {'set' if api_key else 'none (loopback only)'}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -260,8 +262,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_attest.set_defaults(func=cmd_attest)
 
     p_serve = sub.add_parser("serve", help="run OpenAI-compatible bridge")
-    p_serve.add_argument("--host", default="127.0.0.1")
-    p_serve.add_argument("--port", type=int, default=20129)
+    p_serve.add_argument(
+        "--host",
+        default=os.environ.get("SOLANA_CHAT_HOST", "127.0.0.1"),
+    )
+    p_serve.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("SOLANA_CHAT_PORT", "20129")),
+    )
     p_serve.add_argument("--api-key", default=None)
     p_serve.add_argument("--default-model", default=None)
     p_serve.set_defaults(func=cmd_serve)
